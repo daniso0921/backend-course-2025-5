@@ -1,8 +1,9 @@
-﻿
+﻿// server.js
 import http from "http";
 import fs from "fs";
 import path from "path";
 import { Command } from "commander";
+import superagent from "superagent";
 
 const program = new Command();
 
@@ -14,7 +15,7 @@ program
 program.parse(process.argv);
 const options = program.opts();
 
-
+// створюємо теку кешу, якщо її ще нема
 if (!fs.existsSync(options.cache)) {
     fs.mkdirSync(options.cache, { recursive: true });
     console.log(`📁 Створено теку кешу: ${options.cache}`);
@@ -26,7 +27,7 @@ function getCacheFilePath(code) {
 
 const server = http.createServer(async (req, res) => {
     const method = req.method;
-    const code = req.url.slice(1); // наприклад "/200" → "200"
+    const code = req.url.slice(1); // "/200" → "200"
     const filePath = getCacheFilePath(code);
 
     if (!["GET", "PUT", "DELETE"].includes(method)) {
@@ -37,12 +38,27 @@ const server = http.createServer(async (req, res) => {
 
     try {
         if (method === "GET") {
-            //  GET: прочитати картинку з кешу 
-            const data = await fs.promises.readFile(filePath);
-            res.writeHead(200, { "Content-Type": "image/jpeg" });
-            res.end(data);
+            try {
+                // 1️⃣ спробуємо прочитати з кешу
+                const data = await fs.promises.readFile(filePath);
+                res.writeHead(200, { "Content-Type": "image/jpeg" });
+                res.end(data);
+            } catch {
+                // 2️⃣ якщо нема у кеші — завантажуємо з http.cat
+                try {
+                    const response = await superagent.get(`https://http.cat/${code}`).responseType("blob");
+                    const buffer = Buffer.from(response.body);
+                    await fs.promises.writeFile(filePath, buffer); // кешуємо
+                    res.writeHead(200, { "Content-Type": "image/jpeg" });
+                    res.end(buffer);
+                    console.log(`🐱 Кешовано нову картинку для коду ${code}`);
+                } catch {
+                    res.writeHead(404, { "Content-Type": "text/plain" });
+                    res.end("Not found on http.cat");
+                }
+            }
         } else if (method === "PUT") {
-            //  PUT: записати новий файл у кеш 
+            // PUT — записуємо вручну
             let body = [];
             for await (const chunk of req) body.push(chunk);
             const buffer = Buffer.concat(body);
@@ -50,14 +66,13 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(201, { "Content-Type": "text/plain" });
             res.end("Created");
         } else if (method === "DELETE") {
-            //  DELETE: видалити файл з кешу 
             await fs.promises.unlink(filePath);
             res.writeHead(200, { "Content-Type": "text/plain" });
             res.end("Deleted");
         }
-    } catch (err) {
-        res.writeHead(404, { "Content-Type": "text/plain" });
-        res.end("Not found");
+    } catch {
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.end("Server error");
     }
 });
 
